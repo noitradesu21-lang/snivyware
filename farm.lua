@@ -49,6 +49,136 @@ local function Items()
 	end)
 end
 
+local threatKeywords = {
+	"bobo",
+	"happi",
+	"munci",
+	"plushie",
+	"jard",
+	"halp",
+	"galp",
+	"balp",
+	"vinedog",
+	"vine dog",
+	"amelia",
+	"incursion",
+	"soldier",
+	"rebel",
+	"mimic",
+	"swarm",
+	"infected",
+	"nextbot",
+	"hazard",
+	"boss",
+	"threat",
+}
+
+local threatAttributes = {
+	"AI",
+	"IsAI",
+	"Bot",
+	"IsBot",
+	"Nextbot",
+	"Entity",
+	"Special",
+	"SpecialRound",
+	"Boss",
+	"Threat",
+	"Hazard",
+	"Hostile",
+	"Infected",
+}
+
+local function getSpawnCFrame(sp)
+	if not sp then return nil end
+	if sp:IsA("BasePart") then
+		return sp.CFrame
+	elseif sp:IsA("Model") then
+		return sp:GetPivot()
+	end
+	return nil
+end
+
+local function getInstancePosition(inst)
+	if not inst then return nil end
+	if inst:IsA("Model") then
+		local hrp = inst:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			return hrp.Position
+		end
+		if inst.PrimaryPart then
+			return inst.PrimaryPart.Position
+		end
+		local part = inst:FindFirstChildWhichIsA("BasePart")
+		if part then
+			return part.Position
+		end
+		local pivot = inst:GetPivot()
+		return pivot.Position
+	elseif inst:IsA("BasePart") then
+		return inst.Position
+	end
+	return nil
+end
+
+local function isThreat(inst, localChar)
+	if not inst or inst == localChar or inst:IsDescendantOf(localChar) then
+		return false
+	end
+
+	-- Exclude non-threat structures, collectibles, and map elements
+	local instName = inst.Name
+	if instName == "Tickets" or instName == "Ticket" or instName == "ItemSpawns" or instName == "ItemSpawn"
+		or instName == "Map" or instName == "Terrain" or instName == "Camera" then
+		return false
+	end
+
+	local PlayersService = game:GetService("Players")
+	local plr = PlayersService:GetPlayerFromCharacter(inst)
+
+	if plr then
+		if plr == PlayersService.LocalPlayer then
+			return false
+		end
+		-- Check if player is infected in Infection special round
+		local isInfected = inst:GetAttribute("Infected") == true
+			or plr:GetAttribute("Infected") == true
+			or inst:GetAttribute("Team") == "Infected"
+			or (plr.Team and string.lower(plr.Team.Name) == "infected")
+			or inst:GetAttribute("Role") == "Infected"
+			or inst:FindFirstChild("Infected") ~= nil
+		return isInfected
+	end
+
+	-- Non-player: check attributes
+	for _, attr in ipairs(threatAttributes) do
+		local val = inst:GetAttribute(attr)
+		if val == true or (type(val) == "string" and string.lower(val) == "true") then
+			return true
+		end
+	end
+
+	-- Non-player: check if inside dedicated threat/entity/player folders
+	local parent = inst.Parent
+	if parent then
+		local pName = parent.Name
+		if pName == "Players" or pName == "Entities" or pName == "NPCs" or pName == "Bots"
+			or pName == "Special" or pName == "SpecialRound" or pName == "Hazards" then
+			return true
+		end
+	end
+
+	-- Check special round keywords in name
+	local lowerName = string.lower(instName)
+	for _, kw in ipairs(threatKeywords) do
+		if string.find(lowerName, kw, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
 local function Avoid()
 	task.spawn(function()
 		while _G.Avoid do
@@ -61,22 +191,71 @@ local function Avoid()
 					return
 				end
 
-				-- Collect all Nextbot positions and check if any are within 200 studs
-				local nextbotPositions = {}
+				-- Collect all Nextbot and special round threat positions
+				local threatPositions = {}
 				local nearestDist = 200
 				local hasThreat = false
+				local seen = {}
 
-				local playersFolder = workspace:FindFirstChild("Players")
-				if playersFolder then
-					for _, plr in pairs(playersFolder:GetChildren()) do
-						if plr:GetAttribute("AI") == true and plr:FindFirstChild("HumanoidRootPart") then
-							local pos = plr.HumanoidRootPart.Position
-							table.insert(nextbotPositions, pos)
+				local function checkAndAddThreat(inst)
+					if not inst or seen[inst] then return end
+					seen[inst] = true
+					if isThreat(inst, char) then
+						local pos = getInstancePosition(inst)
+						if pos then
+							table.insert(threatPositions, pos)
 							local dist = (root.Position - pos).Magnitude
 							if dist < nearestDist then
 								hasThreat = true
 							end
 						end
+					end
+				end
+
+				local folderNames = {
+					"Players", "Entities", "NPCs", "Bots", "Special", "SpecialRound", "Hazards"
+				}
+
+				-- Search workspace folders
+				for _, name in ipairs(folderNames) do
+					local f = workspace:FindFirstChild(name)
+					if f then
+						for _, child in ipairs(f:GetChildren()) do
+							checkAndAddThreat(child)
+						end
+					end
+				end
+
+				-- Search workspace.Game folders
+				local gameFolder = workspace:FindFirstChild("Game")
+				if gameFolder then
+					for _, name in ipairs(folderNames) do
+						local f = gameFolder:FindFirstChild(name)
+						if f then
+							for _, child in ipairs(f:GetChildren()) do
+								checkAndAddThreat(child)
+							end
+						end
+					end
+				end
+
+				-- Search Map folders
+				local mapFolder = workspace:FindFirstChild("Map") or (gameFolder and gameFolder:FindFirstChild("Map"))
+				if mapFolder then
+					for _, name in ipairs({"Entities", "NPCs", "Hazards", "Special"}) do
+						local f = mapFolder:FindFirstChild(name)
+						if f then
+							for _, child in ipairs(f:GetChildren()) do
+								checkAndAddThreat(child)
+							end
+						end
+					end
+				end
+
+				-- Search direct workspace children for loose special round entities
+				for _, child in ipairs(workspace:GetChildren()) do
+					if not child:IsA("Terrain") and not child:IsA("Camera") and child.Name ~= "Map" and child.Name ~= "Effects" then
+						checkAndAddThreat(child)
 					end
 				end
 
@@ -86,10 +265,14 @@ local function Avoid()
 
 				-- Get all ItemSpawns from the map
 				local allSpawns = {}
-				local ItemSpawns = workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("ItemSpawns")
+				local ItemSpawns = (workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("ItemSpawns"))
+					or (gameFolder and gameFolder:FindFirstChild("Map") and gameFolder.Map:FindFirstChild("ItemSpawns"))
+					or (gameFolder and gameFolder:FindFirstChild("ItemSpawns"))
+					or workspace:FindFirstChild("ItemSpawns")
+
 				if ItemSpawns then
 					for _, sp in pairs(ItemSpawns:GetChildren()) do
-						if sp:IsA("BasePart") or sp.Name == "ItemSpawn" then
+						if sp:IsA("BasePart") or sp:IsA("Model") or sp.Name == "ItemSpawn" then
 							table.insert(allSpawns, sp)
 						end
 					end
@@ -99,27 +282,30 @@ local function Avoid()
 					return
 				end
 
-				-- Filter spawns that are far away from all Nextbots (>= 60 studs)
+				-- Filter spawns that are far away from all threats (>= 200 studs)
 				local safeSpawns = {}
 				local bestSpawn, maxDist = nil, -1
 
 				for _, sp in ipairs(allSpawns) do
-					local spPos = sp.Position
-					local minDistanceToNextbot = math.huge
-					for _, nbPos in ipairs(nextbotPositions) do
-						local d = (spPos - nbPos).Magnitude
-						if d < minDistanceToNextbot then
-							minDistanceToNextbot = d
+					local cf = getSpawnCFrame(sp)
+					if cf then
+						local spPos = cf.Position
+						local minDistanceToThreat = math.huge
+						for _, tPos in ipairs(threatPositions) do
+							local d = (spPos - tPos).Magnitude
+							if d < minDistanceToThreat then
+								minDistanceToThreat = d
+							end
 						end
-					end
 
-					if minDistanceToNextbot >= 200 then
-						table.insert(safeSpawns, sp)
-					end
+						if minDistanceToThreat >= 200 then
+							table.insert(safeSpawns, { spawn = sp, cf = cf })
+						end
 
-					if minDistanceToNextbot > maxDist then
-						maxDist = minDistanceToNextbot
-						bestSpawn = sp
+						if minDistanceToThreat > maxDist then
+							maxDist = minDistanceToThreat
+							bestSpawn = { spawn = sp, cf = cf }
+						end
 					end
 				end
 
@@ -131,10 +317,10 @@ local function Avoid()
 					targetSpawn = bestSpawn
 				end
 
-				if targetSpawn then
+				if targetSpawn and targetSpawn.cf then
 					root.AssemblyLinearVelocity = Vector3.zero
 					root.AssemblyAngularVelocity = Vector3.zero
-					root.CFrame = targetSpawn.CFrame + Vector3.new(0, 2, 0)
+					root.CFrame = targetSpawn.cf + Vector3.new(0, 2, 0)
 					task.wait(0.5) -- Cool down to prevent rapid repeated teleports
 				end
 			end)
@@ -165,7 +351,7 @@ Left:AddToggle("CollectItems", {
 
 Left:AddToggle("AvoidNextbot", {
 	Text = "Avoid Nextbot",
-	Tooltip = "Randomly teleports to an item spawn far from Nextbots when one approaches",
+	Tooltip = "Randomly teleports to an item spawn far from Nextbots and special round threats when one approaches",
 	Default = false,
 })
 
